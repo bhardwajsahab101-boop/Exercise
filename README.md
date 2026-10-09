@@ -1,8 +1,5 @@
-<<<<<<< HEAD
-# Exercise
-this is my exericse app
-=======
 # 🏃 Stride — Exercise & Movement Tracker
+
 
 **Stride** is a modern, responsive exercise-tracking web application built with a warm, modern visual design (deep forest green accents, off-white background, rounded cards, generous spacing, and subtle motion).
 
@@ -138,4 +135,4 @@ VITE_SUPABASE_ANON_KEY=your-actual-supabase-anon-key
 
 ## 📜 License
 MIT License — Built for Stride Fitness
->>>>>>> c69ebd9 (feat: complete Stride workout tracking app with database sync, pace analytics, and dedicated exercise pages)
+

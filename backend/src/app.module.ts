@@ -4,6 +4,7 @@ import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { SupabaseModule } from './supabase/supabase.module';
 import { WorkoutsModule } from './workouts/workouts.module';
+import { ShareModule } from './share/share.module';
 
 @Module({
   imports: [
@@ -13,8 +14,10 @@ import { WorkoutsModule } from './workouts/workouts.module';
     }),
     SupabaseModule,
     WorkoutsModule,
+    ShareModule,
   ],
   controllers: [AppController],
   providers: [AppService],
 })
 export class AppModule {}
+

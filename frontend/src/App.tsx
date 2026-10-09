@@ -11,22 +11,40 @@ import { Progress } from './pages/Progress';
 import { ExerciseFolder } from './pages/ExerciseFolder';
 import { ExerciseDetailPage } from './pages/ExerciseDetailPage';
 import { Settings } from './pages/Settings';
+import { SharedProgressView } from './pages/SharedProgressView';
 
 import type { Workout, UserGoal, UserProfile, ExerciseType } from './types/workout';
 import { 
   getLocalWorkouts, 
-  addLocalWorkout, 
-  updateLocalWorkout, 
-  deleteLocalWorkout, 
+  saveLocalWorkouts, 
   getLocalGoals, 
-  saveLocalGoals,
-  saveLocalWorkouts
+  saveLocalGoals 
 } from './services/storage';
 import { supabase } from './services/supabase';
 import { api } from './services/api';
 
 export const App: React.FC = () => {
+  // Family sharing route detection
+  const [shareToken] = useState<string | null>(() => {
+    const path = window.location.pathname;
+    if (path.startsWith('/share/')) {
+      const token = path.replace('/share/', '').split('/')[0].trim();
+      if (token) return token;
+    }
+
+    const params = new URLSearchParams(window.location.search);
+    const shareParam = params.get('share');
+    if (shareParam) return shareParam.trim();
+
+    if (window.location.hash.startsWith('#share=')) {
+      return window.location.hash.replace('#share=', '').trim();
+    }
+
+    return null;
+  });
+
   const [activeTab, setActiveTab] = useState<string>('overview');
+
   const [selectedExerciseType, setSelectedExerciseType] = useState<ExerciseType>('run');
 
   const [workouts, setWorkouts] = useState<Workout[]>([]);
@@ -44,21 +62,35 @@ export const App: React.FC = () => {
   const [isOnline, setIsOnline] = useState<boolean>(navigator.onLine);
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
 
-  // Load initial data from database / storage
+  // Load initial workouts from Supabase or local cache
+  const fetchUserWorkouts = async (authenticatedUser?: UserProfile) => {
+    const activeAuth = authenticatedUser || user;
+    if (activeAuth.authenticated) {
+      try {
+        const remoteData = await api.getWorkouts();
+        setWorkouts(remoteData);
+        saveLocalWorkouts(remoteData);
+        return;
+      } catch (err: any) {
+        console.warn('Could not fetch from Supabase:', err.message);
+      }
+    }
+    // Fallback to local cache if offline or unauthenticated
+    setWorkouts(getLocalWorkouts());
+  };
+
   useEffect(() => {
-    const loadedWorkouts = getLocalWorkouts();
-    setWorkouts(loadedWorkouts);
+    fetchUserWorkouts();
   }, []);
 
   // Listen for online/offline events
   useEffect(() => {
     const handleOnline = () => {
       setIsOnline(true);
-      addToast('success', 'Back online! Syncing workouts with database...');
+      fetchUserWorkouts();
     };
     const handleOffline = () => {
       setIsOnline(false);
-      addToast('info', 'Working in offline mode. Changes saved locally.');
     };
 
     window.addEventListener('online', handleOnline);
@@ -76,21 +108,13 @@ export const App: React.FC = () => {
       try {
         const { data } = await supabase.auth.getSession();
         if (data?.session?.user) {
-          setUser({
+          const profile: UserProfile = {
             email: data.session.user.email,
             id: data.session.user.id,
             authenticated: true,
-          });
-          // Fetch user's real workouts from Supabase / API database
-          try {
-            const remoteWorkouts = await api.getWorkouts();
-            if (remoteWorkouts && Array.isArray(remoteWorkouts)) {
-              setWorkouts(remoteWorkouts);
-              saveLocalWorkouts(remoteWorkouts);
-            }
-          } catch (e) {
-            // Keep local data if API not reachable
-          }
+          };
+          setUser(profile);
+          await fetchUserWorkouts(profile);
         }
       } catch (err) {
         // Auth not initialized or offline
@@ -101,24 +125,17 @@ export const App: React.FC = () => {
 
     const { data: authListener } = supabase.auth.onAuthStateChange(async (_event, session) => {
       if (session?.user) {
-        setUser({
+        const profile: UserProfile = {
           email: session.user.email,
           id: session.user.id,
           authenticated: true,
-        });
+        };
+        setUser(profile);
         addToast('success', `Signed in as ${session.user.email}`);
-
-        try {
-          const remoteWorkouts = await api.getWorkouts();
-          if (remoteWorkouts && Array.isArray(remoteWorkouts)) {
-            setWorkouts(remoteWorkouts);
-            saveLocalWorkouts(remoteWorkouts);
-          }
-        } catch (e) {
-          // Keep current
-        }
+        await fetchUserWorkouts(profile);
       } else {
         setUser({ authenticated: false });
+        setWorkouts(getLocalWorkouts());
       }
     });
 
@@ -137,48 +154,75 @@ export const App: React.FC = () => {
     setToasts((prev) => prev.filter((t) => t.id !== id));
   };
 
-  // Workout Handlers
-  const handleSaveNewWorkout = async (workoutData: Partial<Workout>) => {
-    const newLocalItem = addLocalWorkout(workoutData);
-    setWorkouts(getLocalWorkouts());
-    addToast('success', 'Workout saved!');
+  /**
+   * Save Workout Handler: Awaits direct database write in Supabase.
+   * Throws if unauthenticated or if Supabase database query fails.
+   */
+  const handleSaveNewWorkout = async (workoutData: Partial<Workout>): Promise<void> => {
+    if (!user.authenticated) {
+      const authErr = new Error('Please sign in with your email (in Settings) to save workouts to Supabase.');
+      addToast('error', authErr.message);
+      throw authErr;
+    }
 
-    if (isOnline && user.authenticated) {
-      try {
-        const createdOnServer = await api.createWorkout(workoutData);
-        updateLocalWorkout(newLocalItem.id, { synced: true, id: createdOnServer.id });
-        setWorkouts(getLocalWorkouts());
-      } catch (err: any) {
-        console.warn('API sync deferred to background queue:', err.message);
-      }
+    try {
+      // Await real Supabase INSERT response
+      const createdRecord = await api.createWorkout(workoutData);
+      
+      // Update state and local storage cache with real database record
+      const updatedList = [createdRecord, ...workouts.filter((w) => w.id !== createdRecord.id)];
+      setWorkouts(updatedList);
+      saveLocalWorkouts(updatedList);
+
+      addToast('success', 'Workout saved to Supabase database!');
+    } catch (err: any) {
+      console.error('Save workout failed:', err);
+      addToast('error', `Failed to save to database: ${err.message}`);
+      throw err; // Re-throw to show in QuickLogModal error banner
     }
   };
 
-  const handleUpdateWorkout = async (id: string, updatedData: Partial<Workout>) => {
-    updateLocalWorkout(id, updatedData);
-    setWorkouts(getLocalWorkouts());
-    addToast('success', 'Workout updated!');
+  /**
+   * Update Workout Handler: Awaits direct Supabase update.
+   */
+  const handleUpdateWorkout = async (id: string, updatedData: Partial<Workout>): Promise<void> => {
+    if (!user.authenticated) {
+      const authErr = new Error('Please sign in to update workouts in Supabase.');
+      addToast('error', authErr.message);
+      throw authErr;
+    }
 
-    if (isOnline && user.authenticated && !id.startsWith('loc-')) {
-      try {
-        await api.updateWorkout(id, updatedData);
-      } catch (err: any) {
-        console.warn('API update failed:', err.message);
-      }
+    try {
+      const updatedRecord = await api.updateWorkout(id, updatedData);
+      const updatedList = workouts.map((w) => (w.id === id ? updatedRecord : w));
+      setWorkouts(updatedList);
+      saveLocalWorkouts(updatedList);
+      addToast('success', 'Workout updated in Supabase database!');
+    } catch (err: any) {
+      console.error('Update workout failed:', err);
+      addToast('error', `Failed to update database: ${err.message}`);
+      throw err;
     }
   };
 
-  const handleDeleteWorkout = async (id: string) => {
-    deleteLocalWorkout(id);
-    setWorkouts(getLocalWorkouts());
-    addToast('info', 'Workout deleted');
+  /**
+   * Delete Workout Handler: Awaits direct Supabase deletion.
+   */
+  const handleDeleteWorkout = async (id: string): Promise<void> => {
+    if (!user.authenticated) {
+      addToast('error', 'Please sign in to delete workouts from Supabase.');
+      return;
+    }
 
-    if (isOnline && user.authenticated && !id.startsWith('loc-')) {
-      try {
-        await api.deleteWorkout(id);
-      } catch (err: any) {
-        console.warn('API delete failed:', err.message);
-      }
+    try {
+      await api.deleteWorkout(id);
+      const filtered = workouts.filter((w) => w.id !== id);
+      setWorkouts(filtered);
+      saveLocalWorkouts(filtered);
+      addToast('info', 'Workout deleted from Supabase database');
+    } catch (err: any) {
+      console.error('Delete workout failed:', err);
+      addToast('error', `Failed to delete from database: ${err.message}`);
     }
   };
 
@@ -196,23 +240,9 @@ export const App: React.FC = () => {
 
     try {
       const remoteWorkouts = await api.getWorkouts();
-      if (remoteWorkouts && remoteWorkouts.length > 0) {
-        const syncedRemote = remoteWorkouts.map((w) => ({ ...w, synced: true }));
-        setWorkouts(syncedRemote);
-        saveLocalWorkouts(syncedRemote);
-        addToast('success', `Synced ${remoteWorkouts.length} workouts from database!`);
-      } else {
-        const unsynced = workouts.filter((w) => w.synced === false);
-        if (unsynced.length > 0) {
-          await api.syncBatch(unsynced);
-          const updated = workouts.map((w) => ({ ...w, synced: true }));
-          setWorkouts(updated);
-          saveLocalWorkouts(updated);
-          addToast('success', `Uploaded ${unsynced.length} pending workouts to database!`);
-        } else {
-          addToast('info', 'Database is up to date!');
-        }
-      }
+      setWorkouts(remoteWorkouts);
+      saveLocalWorkouts(remoteWorkouts);
+      addToast('success', `Synced ${remoteWorkouts.length} workouts from Supabase database!`);
     } catch (err: any) {
       addToast('error', `Sync failed: ${err.message}`);
     }
@@ -222,6 +252,8 @@ export const App: React.FC = () => {
     try {
       await supabase.auth.signOut();
       setUser({ authenticated: false });
+      setWorkouts([]);
+      saveLocalWorkouts([]);
       addToast('info', 'Signed out successfully.');
     } catch (err: any) {
       addToast('error', 'Sign out failed');
@@ -240,8 +272,13 @@ export const App: React.FC = () => {
 
   const pendingSyncCount = workouts.filter((w) => w.synced === false).length;
 
+  if (shareToken) {
+    return <SharedProgressView token={shareToken} />;
+  }
+
   return (
     <div className="app-container">
+
       <ToastContainer toasts={toasts} onDismiss={removeToast} />
 
       <Navbar

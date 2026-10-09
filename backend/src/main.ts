@@ -11,12 +11,39 @@ async function bootstrap() {
   app.setGlobalPrefix('api');
 
   // Enable CORS for frontend requests
-  const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
+  const allowedOrigins = [
+    'https://exercise.launchstack.in',
+    'http://localhost:5173',
+    'http://127.0.0.1:5173',
+    'http://localhost:3000',
+  ];
+
+  const envFrontend = process.env.FRONTEND_URL;
+  if (envFrontend) {
+    const trimmed = envFrontend.replace(/\/$/, '');
+    if (!allowedOrigins.includes(trimmed)) {
+      allowedOrigins.push(trimmed);
+    }
+  }
+
   app.enableCors({
-    origin: [frontendUrl, 'http://localhost:5173', 'http://127.0.0.1:5173'],
+    origin: (requestOrigin, callback) => {
+      // Allow requests with no origin (curl, server-to-server, mobile in-app browsers)
+      if (!requestOrigin) return callback(null, true);
+
+      const normalized = requestOrigin.replace(/\/$/, '');
+      const isAllowed = allowedOrigins.some((allowed) => allowed.replace(/\/$/, '') === normalized);
+
+      if (isAllowed) {
+        return callback(null, true);
+      }
+      logger.warn(`CORS request rejected from origin: ${requestOrigin}`);
+      return callback(null, false);
+    },
     methods: 'GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS',
     credentials: true,
   });
+
 
   // Enable global DTO validation
   app.useGlobalPipes(

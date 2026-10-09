@@ -17,11 +17,12 @@ import { CreateWorkoutDto } from './dto/create-workout.dto';
 import { UpdateWorkoutDto } from './dto/update-workout.dto';
 import { BatchSyncDto } from './dto/batch-sync.dto';
 import { SupabaseAuthGuard } from '../auth/supabase-auth.guard';
+import { OwnerGuard } from '../auth/owner.guard';
 import { CurrentUser, UserPayload } from '../auth/user.decorator';
 
 @ApiTags('workouts')
 @ApiBearerAuth()
-@UseGuards(SupabaseAuthGuard)
+@UseGuards(SupabaseAuthGuard, OwnerGuard)
 @Controller('workouts')
 export class WorkoutsController {
   constructor(private readonly workoutsService: WorkoutsService) {}

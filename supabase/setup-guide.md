@@ -71,4 +71,33 @@ VITE_SUPABASE_ANON_KEY=<YOUR-SUPABASE-ANON-KEY>
 
 > 🚨 **Crucial Security Reminder:**
 > Never place `SUPABASE_SERVICE_ROLE_KEY` in `frontend/.env` or frontend browser code!
-> All database queries and token validations are handled through the NestJS backend API.
+> All database writes and token validations are handled through the NestJS backend API.
+
+---
+
+## 6. Migration 02: Family Sharing & Single-Owner Security
+
+To secure your workouts to your owner account and enable read-only family sharing:
+
+### A. Run Migration SQL in Supabase
+1. In Supabase Dashboard, go to **SQL Editor** -> **New Query**.
+2. Open [`supabase/migrations/02_family_sharing_and_owner_security.sql`](file:///c:/Users/bhard/OneDrive/Desktop/Exercise/supabase/migrations/02_family_sharing_and_owner_security.sql), copy its contents, and click **Run**.
+3. This will:
+   - Create `public.share_settings` table (stores SHA-256 token hash).
+   - Enforce owner-only RLS policies on `workouts` and `share_settings`.
+   - Revoke public/anonymous direct access to `workouts`.
+   - Install the safe `public.get_shared_workouts_by_token(TEXT)` PostgreSQL RPC function.
+
+### B. Disable Public Sign-ups in Supabase
+1. In Supabase Dashboard, navigate to **Authentication** -> **Providers** -> **Email**.
+2. Uncheck / Toggle OFF **"Allow new users to sign up"**.
+3. Save changes. This ensures no external viewers or visitors can create an account in your project.
+
+### C. Configure Owner User ID in `backend/.env`
+1. Under **Authentication** -> **Users** in your Supabase Dashboard, copy your Owner User UUID.
+2. In `backend/.env`, set:
+   ```env
+   OWNER_USER_ID=<YOUR-OWNER-UUID>
+   ```
+   (e.g., `OWNER_USER_ID=470af75f-61e0-40c9-b760-aab5730b9f94`)
+3. Restart NestJS backend (`npm run start:dev`).

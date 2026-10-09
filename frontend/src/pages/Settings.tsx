@@ -1,7 +1,21 @@
-import React, { useState } from 'react';
-import { Mail, RefreshCw, Download, CheckCircle, AlertCircle } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import {
+  Mail,
+  RefreshCw,
+  Download,
+  CheckCircle,
+  AlertCircle,
+  Share2,
+  Copy,
+  Check,
+  ShieldCheck,
+  RefreshCcw,
+  EyeOff,
+  Link as LinkIcon,
+} from 'lucide-react';
 import type { UserGoal, UserProfile, Workout } from '../types/workout';
 import { supabase, isSupabaseConfigured } from '../services/supabase';
+import { api } from '../services/api';
 
 interface SettingsProps {
   goals: UserGoal;
@@ -31,7 +45,36 @@ export const Settings: React.FC<SettingsProps> = ({
 
   const [isSyncing, setIsSyncing] = useState(false);
 
+  // Read-only Family Sharing state
+  const [shareStatus, setShareStatus] = useState<{ hasActiveShare: boolean; createdAt?: string | null } | null>(null);
+  const [currentShareUrl, setCurrentShareUrl] = useState<string>(
+    () => localStorage.getItem('stride_owner_share_link') || '',
+  );
+  const [isManagingShare, setIsManagingShare] = useState<boolean>(false);
+  const [shareFeedback, setShareFeedback] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
+  const [hasCopied, setHasCopied] = useState<boolean>(false);
+
+  // Load current share status on mount or auth change
+  const refreshShareStatus = async () => {
+    if (!user.authenticated) return;
+    try {
+      const res = await api.getShareStatus();
+      setShareStatus(res);
+      if (!res.hasActiveShare) {
+        setCurrentShareUrl('');
+        localStorage.removeItem('stride_owner_share_link');
+      }
+    } catch (e) {
+      // Backend may be offline or table pending
+    }
+  };
+
+  useEffect(() => {
+    refreshShareStatus();
+  }, [user.authenticated]);
+
   const handleSaveGoal = () => {
+
     onUpdateGoals({
       weekly_target: selectedTarget,
       unit_distance: unitDistance,
@@ -90,7 +133,85 @@ export const Settings: React.FC<SettingsProps> = ({
     }
   };
 
+  const handleGenerateShareLink = async () => {
+    if (!user.authenticated) return;
+    setIsManagingShare(true);
+    setShareFeedback(null);
+    try {
+      const res = await api.generateShareLink();
+      setCurrentShareUrl(res.shareUrl);
+      localStorage.setItem('stride_owner_share_link', res.shareUrl);
+      setShareStatus({ hasActiveShare: true, createdAt: res.createdAt });
+      setShareFeedback({
+        type: 'success',
+        message: 'Share link generated! Copy and send it to your parents.',
+      });
+    } catch (err: any) {
+      setShareFeedback({
+        type: 'error',
+        message: err.message || 'Failed to generate share link.',
+      });
+    } finally {
+      setIsManagingShare(false);
+    }
+  };
+
+  const handleRegenerateShareLink = async () => {
+    if (
+      !window.confirm(
+        'Regenerating will revoke the current share link immediately. Anyone with the old link will lose access. Do you want to proceed?',
+      )
+    ) {
+      return;
+    }
+    await handleGenerateShareLink();
+  };
+
+  const handleRevokeShareLink = async () => {
+    if (
+      !window.confirm(
+        'Are you sure you want to revoke your share link? Anyone viewing will immediately lose access.',
+      )
+    ) {
+      return;
+    }
+    setIsManagingShare(true);
+    setShareFeedback(null);
+    try {
+      await api.revokeShareLink();
+      setCurrentShareUrl('');
+      localStorage.removeItem('stride_owner_share_link');
+      setShareStatus({ hasActiveShare: false });
+      setShareFeedback({
+        type: 'success',
+        message: 'Share link revoked. Family access has been disabled.',
+      });
+    } catch (err: any) {
+      setShareFeedback({
+        type: 'error',
+        message: err.message || 'Failed to revoke share link.',
+      });
+    } finally {
+      setIsManagingShare(false);
+    }
+  };
+
+  const handleCopyShareLink = async () => {
+    if (!currentShareUrl) return;
+    try {
+      await navigator.clipboard.writeText(currentShareUrl);
+      setHasCopied(true);
+      setTimeout(() => setHasCopied(false), 2500);
+    } catch (err) {
+      setShareFeedback({
+        type: 'info' as any,
+        message: 'Please copy the link directly from the text box.',
+      });
+    }
+  };
+
   const exportDataJson = () => {
+
     const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(workouts, null, 2));
     const downloadAnchor = document.createElement('a');
     downloadAnchor.setAttribute("href", dataStr);
@@ -227,6 +348,136 @@ export const Settings: React.FC<SettingsProps> = ({
             </span>
           </div>
         </div>
+
+        {/* Card 3: Read-Only Family Sharing */}
+        <div className="stride-card settings-card share-card-span">
+          <div className="card-kicker-header">
+            <span className="card-kicker">READ-ONLY FAMILY SHARING</span>
+            <h3 className="settings-card-title">Share my progress</h3>
+            <p className="settings-card-subtitle">
+              Generate a private, hard-to-guess link so your parents can view your running history, progress charts, and personal bests on their phones without signing in.
+            </p>
+          </div>
+
+          {!user.authenticated ? (
+            <div className="share-unauth-box">
+              <ShieldCheck size={20} className="text-muted" />
+              <span>Connect Supabase with your owner account above to generate and manage family share links.</span>
+            </div>
+          ) : (
+            <div className="share-controls-box">
+              {/* Status Header */}
+              <div className="share-status-header">
+                <div className="status-label-group">
+                  <span className={`status-dot-indicator ${shareStatus?.hasActiveShare ? 'active' : 'inactive'}`} />
+                  <span className="status-main-text">
+                    {shareStatus?.hasActiveShare ? 'Share Link Active' : 'Sharing Inactive'}
+                  </span>
+                </div>
+                {shareStatus?.hasActiveShare && shareStatus.createdAt && (
+                  <span className="status-date-sub">
+                    Active since {new Date(shareStatus.createdAt).toLocaleDateString()}
+                  </span>
+                )}
+              </div>
+
+              {shareFeedback && (
+                <div className={`status-banner ${shareFeedback.type}`}>
+                  {shareFeedback.type === 'success' ? <CheckCircle size={16} /> : <AlertCircle size={16} />}
+                  <span>{shareFeedback.message}</span>
+                </div>
+              )}
+
+              {shareStatus?.hasActiveShare ? (
+                <div className="active-share-flow">
+                  {currentShareUrl ? (
+                    <div className="share-input-group">
+                      <div className="share-input-wrapper">
+                        <LinkIcon size={16} className="share-input-icon" />
+                        <input
+                          type="text"
+                          readOnly
+                          value={currentShareUrl}
+                          className="form-input share-url-input"
+                          onClick={(e) => (e.target as HTMLInputElement).select()}
+                        />
+                      </div>
+                      <button
+                        type="button"
+                        className="btn-primary-stride copy-share-btn"
+                        onClick={handleCopyShareLink}
+                      >
+                        {hasCopied ? (
+                          <>
+                            <Check size={14} />
+                            <span>Copied!</span>
+                          </>
+                        ) : (
+                          <>
+                            <Copy size={14} />
+                            <span>Copy link</span>
+                          </>
+                        )}
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="link-active-notice">
+                      <p>
+                        A share link is active in the database. If you need the URL again, click <strong>Regenerate link</strong> below to produce a fresh copy.
+                      </p>
+                    </div>
+                  )}
+
+                  <div className="share-actions-row">
+                    <button
+                      type="button"
+                      className="btn-secondary-stride"
+                      onClick={handleRegenerateShareLink}
+                      disabled={isManagingShare}
+                    >
+                      <RefreshCcw size={14} className={isManagingShare ? 'animate-spin' : ''} />
+                      <span>Regenerate link</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      className="btn-secondary-stride danger"
+                      onClick={handleRevokeShareLink}
+                      disabled={isManagingShare}
+                    >
+                      <EyeOff size={14} />
+                      <span>Revoke link</span>
+                    </button>
+                  </div>
+
+                  <div className="share-security-callout">
+                    <p className="callout-primary">
+                      <strong>The link will work for anyone who has it, so send it only to the people you want to view your progress.</strong>
+                    </p>
+                    <p className="callout-secondary">
+                      Parents can see your running history, progress charts, and personal records. Your private notes, account credentials, and workout editing tools are strictly protected and never shared.
+                    </p>
+                  </div>
+                </div>
+              ) : (
+                <div className="inactive-share-flow">
+                  <p className="inactive-help-text">
+                    No active share link. Generate a secure, 64-character random link that you can copy and text or email to your family.
+                  </p>
+                  <button
+                    type="button"
+                    className="btn-primary-stride generate-share-btn"
+                    onClick={handleGenerateShareLink}
+                    disabled={isManagingShare}
+                  >
+                    <Share2 size={16} />
+                    <span>{isManagingShare ? 'Generating...' : 'Generate share link'}</span>
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
       </div>
 
       <style>{`
@@ -241,6 +492,168 @@ export const Settings: React.FC<SettingsProps> = ({
           grid-template-columns: repeat(2, 1fr);
           gap: 1.5rem;
           width: 100%;
+        }
+
+        .share-card-span {
+          grid-column: 1 / -1;
+        }
+
+        .share-unauth-box {
+          display: flex;
+          align-items: center;
+          gap: 0.75rem;
+          padding: 1.25rem;
+          background: #f9fbf9;
+          border-radius: var(--radius-md);
+          color: var(--text-secondary);
+          font-size: 0.9rem;
+          border: 1px dashed var(--border-subtle);
+        }
+
+        .share-controls-box {
+          display: flex;
+          flex-direction: column;
+          gap: 1.25rem;
+        }
+
+        .share-status-header {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          padding-bottom: 0.75rem;
+          border-bottom: 1px solid var(--border-subtle);
+        }
+
+        .status-label-group {
+          display: flex;
+          align-items: center;
+          gap: 0.5rem;
+        }
+
+        .status-dot-indicator {
+          width: 9px;
+          height: 9px;
+          border-radius: 50%;
+        }
+
+        .status-dot-indicator.active {
+          background: #10b981;
+          box-shadow: 0 0 0 3px rgba(16, 185, 129, 0.2);
+        }
+
+        .status-dot-indicator.inactive {
+          background: #9ca3af;
+        }
+
+        .status-main-text {
+          font-size: 0.92rem;
+          font-weight: 700;
+          color: var(--text-primary);
+        }
+
+        .status-date-sub {
+          font-size: 0.78rem;
+          color: var(--text-muted);
+        }
+
+        .active-share-flow {
+          display: flex;
+          flex-direction: column;
+          gap: 1.25rem;
+        }
+
+        .share-input-group {
+          display: flex;
+          gap: 0.75rem;
+          width: 100%;
+        }
+
+        @media (max-width: 600px) {
+          .share-input-group {
+            flex-direction: column;
+          }
+        }
+
+        .share-input-wrapper {
+          position: relative;
+          flex: 1;
+          display: flex;
+          align-items: center;
+        }
+
+        .share-input-icon {
+          position: absolute;
+          left: 12px;
+          color: var(--text-muted);
+          pointer-events: none;
+        }
+
+        .share-url-input {
+          padding-left: 2.3rem !important;
+          font-family: monospace;
+          font-size: 0.85rem !important;
+          background-color: #f8faf8 !important;
+          cursor: text;
+        }
+
+        .copy-share-btn {
+          white-space: nowrap;
+          padding: 0 1.25rem;
+        }
+
+        .share-actions-row {
+          display: flex;
+          gap: 0.75rem;
+          flex-wrap: wrap;
+        }
+
+        .share-security-callout {
+          background: #f4f8f5;
+          border-radius: var(--radius-md);
+          padding: 1rem 1.25rem;
+          border-left: 4px solid #52b788;
+          display: flex;
+          flex-direction: column;
+          gap: 0.4rem;
+        }
+
+        .callout-primary {
+          font-size: 0.88rem;
+          color: #1b4332;
+          margin: 0;
+        }
+
+        .callout-secondary {
+          font-size: 0.82rem;
+          color: #556b5d;
+          margin: 0;
+        }
+
+        .inactive-share-flow {
+          display: flex;
+          flex-direction: column;
+          align-items: flex-start;
+          gap: 1rem;
+        }
+
+        .inactive-help-text {
+          font-size: 0.9rem;
+          color: var(--text-secondary);
+          margin: 0;
+        }
+
+        .generate-share-btn {
+          display: inline-flex;
+          align-items: center;
+          gap: 0.5rem;
+        }
+
+        .link-active-notice {
+          font-size: 0.88rem;
+          color: var(--text-secondary);
+          padding: 0.75rem 1rem;
+          background: #f9fbf9;
+          border-radius: var(--radius-sm);
         }
 
         @media (max-width: 900px) {
