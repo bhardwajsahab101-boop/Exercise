@@ -31,8 +31,9 @@ export class WorkoutsService {
   async findAll(
     user: UserPayload,
     query?: { type?: string; start_date?: string; end_date?: string; query?: string },
+    userToken?: string,
   ): Promise<WorkoutEntity[]> {
-    const supabase = this.supabaseService.getClient();
+    const supabase = this.supabaseService.getClient(userToken);
 
     if (supabase) {
       let qb = supabase
@@ -71,8 +72,8 @@ export class WorkoutsService {
     return result.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
   }
 
-  async findOne(user: UserPayload, id: string): Promise<WorkoutEntity> {
-    const supabase = this.supabaseService.getClient();
+  async findOne(user: UserPayload, id: string, userToken?: string): Promise<WorkoutEntity> {
+    const supabase = this.supabaseService.getClient(userToken);
 
     if (supabase) {
       const { data, error } = await supabase
@@ -93,8 +94,8 @@ export class WorkoutsService {
     return item;
   }
 
-  async create(user: UserPayload, dto: CreateWorkoutDto): Promise<WorkoutEntity> {
-    const supabase = this.supabaseService.getClient();
+  async create(user: UserPayload, dto: CreateWorkoutDto, userToken?: string): Promise<WorkoutEntity> {
+    const supabase = this.supabaseService.getClient(userToken);
     const totalReps =
       dto.sets && dto.reps_per_set ? dto.sets * dto.reps_per_set : dto.total_reps || null;
 
@@ -141,8 +142,8 @@ export class WorkoutsService {
     return newWorkout;
   }
 
-  async update(user: UserPayload, id: string, dto: UpdateWorkoutDto): Promise<WorkoutEntity> {
-    const supabase = this.supabaseService.getClient();
+  async update(user: UserPayload, id: string, dto: UpdateWorkoutDto, userToken?: string): Promise<WorkoutEntity> {
+    const supabase = this.supabaseService.getClient(userToken);
 
     if (supabase) {
       const { data, error } = await supabase
@@ -184,8 +185,8 @@ export class WorkoutsService {
     return updated;
   }
 
-  async remove(user: UserPayload, id: string): Promise<{ success: boolean }> {
-    const supabase = this.supabaseService.getClient();
+  async remove(user: UserPayload, id: string, userToken?: string): Promise<{ success: boolean }> {
+    const supabase = this.supabaseService.getClient(userToken);
 
     if (supabase) {
       const { error } = await supabase
@@ -199,23 +200,23 @@ export class WorkoutsService {
     }
 
     const index = this.inMemoryWorkouts.findIndex((w) => w.id === id && w.user_id === user.id);
-    if (index === -1) throw new NotFoundException(`Workout with ID ${id} not found`);
+    if (!index && index !== 0) throw new NotFoundException(`Workout with ID ${id} not found`);
 
     this.inMemoryWorkouts.splice(index, 1);
     return { success: true };
   }
 
-  async syncBatch(user: UserPayload, workouts: CreateWorkoutDto[]): Promise<{ syncedCount: number }> {
+  async syncBatch(user: UserPayload, workouts: CreateWorkoutDto[], userToken?: string): Promise<{ syncedCount: number }> {
     let syncedCount = 0;
     for (const w of workouts) {
-      await this.create(user, w);
+      await this.create(user, w, userToken);
       syncedCount++;
     }
     return { syncedCount };
   }
 
-  async getSummary(user: UserPayload) {
-    const list = await this.findAll(user);
+  async getSummary(user: UserPayload, userToken?: string) {
+    const list = await this.findAll(user, undefined, userToken);
     const totalCount = list.length;
     const totalDistance = list.reduce((acc, w) => acc + (w.distance_km || 0), 0);
     const totalReps = list.reduce((acc, w) => acc + (w.total_reps || 0), 0);

@@ -17,6 +17,7 @@ import type { Workout, UserGoal, UserProfile, ExerciseType } from './types/worko
 import { 
   getLocalWorkouts, 
   saveLocalWorkouts, 
+  addLocalWorkout,
   getLocalGoals, 
   saveLocalGoals 
 } from './services/storage';
@@ -62,32 +63,51 @@ export const App: React.FC = () => {
   const [isOnline, setIsOnline] = useState<boolean>(navigator.onLine);
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
 
-  // Load initial workouts from Supabase or local cache
-  const fetchUserWorkouts = async (authenticatedUser?: UserProfile) => {
+  // Sync unsynced local workouts and fetch fresh cloud list via NestJS API
+  const syncAndFetchWorkouts = async (authenticatedUser?: UserProfile) => {
     const activeAuth = authenticatedUser || user;
     if (activeAuth.authenticated) {
+      // 1. Sync any pending offline workouts
+      const local = getLocalWorkouts();
+      const unsynced = local.filter((w) => !w.synced);
+      if (unsynced.length > 0) {
+        try {
+          const syncResult = await api.syncBatch(unsynced);
+          addToast(
+            'success',
+            `Synced ${syncResult.syncedCount || unsynced.length} offline workout(s) to cloud database!`,
+          );
+        } catch (syncErr: any) {
+          console.error('Initial sync error:', syncErr);
+          addToast('error', `Sync failed: ${syncErr.message}`);
+        }
+      }
+
+      // 2. Fetch full list of remote workouts from NestJS API
       try {
         const remoteData = await api.getWorkouts();
         setWorkouts(remoteData);
         saveLocalWorkouts(remoteData);
         return;
       } catch (err: any) {
-        console.warn('Could not fetch from Supabase:', err.message);
+        console.warn('Could not fetch from backend API:', err.message);
+        addToast('error', `Failed to load cloud workouts: ${err.message}`);
       }
     }
+
     // Fallback to local cache if offline or unauthenticated
     setWorkouts(getLocalWorkouts());
   };
 
   useEffect(() => {
-    fetchUserWorkouts();
+    syncAndFetchWorkouts();
   }, []);
 
   // Listen for online/offline events
   useEffect(() => {
     const handleOnline = () => {
       setIsOnline(true);
-      fetchUserWorkouts();
+      syncAndFetchWorkouts();
     };
     const handleOffline = () => {
       setIsOnline(false);
@@ -102,28 +122,65 @@ export const App: React.FC = () => {
     };
   }, []);
 
-  // Supabase Auth listener
+  // Supabase Auth listener & Magic Link Callback handler
   useEffect(() => {
     const checkSessionAndFetch = async () => {
       try {
-        const { data } = await supabase.auth.getSession();
-        if (data?.session?.user) {
+        // 1. Detect errors from Supabase Auth URL parameters or hash
+        const urlParams = new URLSearchParams(window.location.search);
+        const hashStr = window.location.hash.startsWith('#')
+          ? window.location.hash.substring(1)
+          : window.location.hash;
+        const hashParams = new URLSearchParams(hashStr);
+
+        const errorDesc =
+          urlParams.get('error_description') ||
+          hashParams.get('error_description') ||
+          urlParams.get('error') ||
+          hashParams.get('error');
+
+        if (errorDesc) {
+          addToast('error', `Sign-in error: ${decodeURIComponent(errorDesc)}`);
+        }
+
+        // 2. Exchange PKCE code if present in query
+        const code = urlParams.get('code');
+        if (code) {
+          const { error: exchangeError } = await supabase.auth.exchangeCodeForSession(code);
+          if (exchangeError) {
+            addToast('error', `Session exchange failed: ${exchangeError.message}`);
+          }
+        }
+
+        // 3. Clean up tokens and codes from the browser address bar
+        if (window.location.hash.includes('access_token=') || code || errorDesc) {
+          const cleanUrl = window.location.pathname;
+          window.history.replaceState({}, document.title, cleanUrl);
+        }
+
+        // 4. Retrieve current active session
+        const { data: sessionData, error: sessionErr } = await supabase.auth.getSession();
+        if (sessionErr) {
+          console.error('Session error:', sessionErr);
+        }
+
+        if (sessionData?.session?.user) {
           const profile: UserProfile = {
-            email: data.session.user.email,
-            id: data.session.user.id,
+            email: sessionData.session.user.email,
+            id: sessionData.session.user.id,
             authenticated: true,
           };
           setUser(profile);
-          await fetchUserWorkouts(profile);
+          await syncAndFetchWorkouts(profile);
         }
       } catch (err) {
-        // Auth not initialized or offline
+        // Offline or uninitialized
       }
     };
 
     checkSessionAndFetch();
 
-    const { data: authListener } = supabase.auth.onAuthStateChange(async (_event, session) => {
+    const { data: authListener } = supabase.auth.onAuthStateChange(async (event, session) => {
       if (session?.user) {
         const profile: UserProfile = {
           email: session.user.email,
@@ -131,9 +188,11 @@ export const App: React.FC = () => {
           authenticated: true,
         };
         setUser(profile);
-        addToast('success', `Signed in as ${session.user.email}`);
-        await fetchUserWorkouts(profile);
-      } else {
+        if (event === 'SIGNED_IN') {
+          addToast('success', `Signed in as ${session.user.email}`);
+        }
+        await syncAndFetchWorkouts(profile);
+      } else if (event === 'SIGNED_OUT') {
         setUser({ authenticated: false });
         setWorkouts(getLocalWorkouts());
       }
@@ -160,34 +219,35 @@ export const App: React.FC = () => {
    */
   const handleSaveNewWorkout = async (workoutData: Partial<Workout>): Promise<void> => {
     if (!user.authenticated) {
-      const authErr = new Error('Please sign in with your email (in Settings) to save workouts to Supabase.');
-      addToast('error', authErr.message);
-      throw authErr;
+      // Offline mode: save locally with synced: false
+      const localItem = addLocalWorkout(workoutData);
+      setWorkouts((prev) => [localItem, ...prev.filter((w) => w.id !== localItem.id)]);
+      addToast('info', 'Saved locally (offline). Connect Supabase in Settings to sync with cloud.');
+      return;
     }
 
     try {
-      // Await real Supabase INSERT response
+      // Direct cloud database write via NestJS API
       const createdRecord = await api.createWorkout(workoutData);
       
-      // Update state and local storage cache with real database record
       const updatedList = [createdRecord, ...workouts.filter((w) => w.id !== createdRecord.id)];
       setWorkouts(updatedList);
       saveLocalWorkouts(updatedList);
 
-      addToast('success', 'Workout saved to Supabase database!');
+      addToast('success', 'Workout saved to cloud database!');
     } catch (err: any) {
       console.error('Save workout failed:', err);
-      addToast('error', `Failed to save to database: ${err.message}`);
+      addToast('error', `Failed to save to cloud database: ${err.message}`);
       throw err; // Re-throw to show in QuickLogModal error banner
     }
   };
 
   /**
-   * Update Workout Handler: Awaits direct Supabase update.
+   * Update Workout Handler: Awaits direct API update.
    */
   const handleUpdateWorkout = async (id: string, updatedData: Partial<Workout>): Promise<void> => {
     if (!user.authenticated) {
-      const authErr = new Error('Please sign in to update workouts in Supabase.');
+      const authErr = new Error('Please sign in to update workouts in cloud database.');
       addToast('error', authErr.message);
       throw authErr;
     }
@@ -197,7 +257,7 @@ export const App: React.FC = () => {
       const updatedList = workouts.map((w) => (w.id === id ? updatedRecord : w));
       setWorkouts(updatedList);
       saveLocalWorkouts(updatedList);
-      addToast('success', 'Workout updated in Supabase database!');
+      addToast('success', 'Workout updated in cloud database!');
     } catch (err: any) {
       console.error('Update workout failed:', err);
       addToast('error', `Failed to update database: ${err.message}`);
@@ -206,11 +266,11 @@ export const App: React.FC = () => {
   };
 
   /**
-   * Delete Workout Handler: Awaits direct Supabase deletion.
+   * Delete Workout Handler: Awaits direct API deletion.
    */
   const handleDeleteWorkout = async (id: string): Promise<void> => {
     if (!user.authenticated) {
-      addToast('error', 'Please sign in to delete workouts from Supabase.');
+      addToast('error', 'Please sign in to delete workouts from cloud database.');
       return;
     }
 
@@ -219,7 +279,7 @@ export const App: React.FC = () => {
       const filtered = workouts.filter((w) => w.id !== id);
       setWorkouts(filtered);
       saveLocalWorkouts(filtered);
-      addToast('info', 'Workout deleted from Supabase database');
+      addToast('info', 'Workout deleted from cloud database');
     } catch (err: any) {
       console.error('Delete workout failed:', err);
       addToast('error', `Failed to delete from database: ${err.message}`);
@@ -234,15 +294,22 @@ export const App: React.FC = () => {
 
   const handleManualSync = async () => {
     if (!user.authenticated) {
-      addToast('info', 'Please sign in with Supabase first to sync with the database.');
+      addToast('info', 'Please sign in with email first to sync with cloud database.');
       return;
     }
 
     try {
+      const local = getLocalWorkouts();
+      const unsynced = local.filter((w) => !w.synced);
+      if (unsynced.length > 0) {
+        const syncRes = await api.syncBatch(unsynced);
+        addToast('success', `Synced ${syncRes.syncedCount || unsynced.length} unsynced workouts!`);
+      }
+
       const remoteWorkouts = await api.getWorkouts();
       setWorkouts(remoteWorkouts);
       saveLocalWorkouts(remoteWorkouts);
-      addToast('success', `Synced ${remoteWorkouts.length} workouts from Supabase database!`);
+      addToast('success', `Cloud sync complete (${remoteWorkouts.length} total workouts).`);
     } catch (err: any) {
       addToast('error', `Sync failed: ${err.message}`);
     }

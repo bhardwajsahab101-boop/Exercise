@@ -13,3 +13,26 @@ export const isSupabaseConfigured = () => {
 };
 
 export const supabase = createClient(supabaseUrl, supabaseAnonKey);
+
+/**
+ * Returns the current frontend origin URL for magic link redirects
+ */
+export const getFrontendRedirectUrl = (): string => {
+  if (typeof window !== 'undefined' && window.location.origin) {
+    return window.location.origin;
+  }
+  return 'http://localhost:5173';
+};
+
+/**
+ * Sends a Supabase magic link login email with emailRedirectTo strictly targeting the frontend origin
+ */
+export const sendMagicLink = async (email: string) => {
+  const emailRedirectTo = getFrontendRedirectUrl();
+  return await supabase.auth.signInWithOtp({
+    email: email.trim(),
+    options: {
+      emailRedirectTo,
+    },
+  });
+};

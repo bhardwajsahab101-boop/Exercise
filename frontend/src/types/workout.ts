@@ -104,16 +104,18 @@ export interface MonthlyTrendBucket {
   duration_minutes: number;
 }
 
+export interface SharedProgressSummary {
+  total_workouts: number;
+  total_distance_km: number;
+  total_duration_minutes: number;
+  total_runs: number;
+  total_strength_reps: number;
+  active_days: number;
+}
+
 export interface SharedProgressPayload {
   valid: boolean;
-  summary: {
-    total_workouts: number;
-    total_distance_km: number;
-    total_duration_minutes: number;
-    total_runs: number;
-    total_strength_reps: number;
-    active_days: number;
-  };
+  summary: SharedProgressSummary;
   comparisons: SharedProgressComparisons;
   personal_bests: SharedPersonalBests;
   weekly_trends: WeeklyTrendBucket[];

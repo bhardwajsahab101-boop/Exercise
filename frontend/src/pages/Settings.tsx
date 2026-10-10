@@ -14,7 +14,7 @@ import {
   Link as LinkIcon,
 } from 'lucide-react';
 import type { UserGoal, UserProfile, Workout } from '../types/workout';
-import { supabase, isSupabaseConfigured } from '../services/supabase';
+import { isSupabaseConfigured, sendMagicLink } from '../services/supabase';
 import { api } from '../services/api';
 
 interface SettingsProps {
@@ -100,18 +100,13 @@ export const Settings: React.FC<SettingsProps> = ({
     setMagicLinkStatus(null);
 
     try {
-      const { error } = await supabase.auth.signInWithOtp({
-        email: email.trim(),
-        options: {
-          emailRedirectTo: window.location.origin,
-        },
-      });
+      const { error } = await sendMagicLink(email.trim());
 
       if (error) throw error;
 
       setMagicLinkStatus({
         type: 'success',
-        message: `Magic link sent to ${email}!`,
+        message: `Magic link sent to ${email.trim()}! Please check your email inbox and click the sign-in link.`,
       });
       setEmail('');
     } catch (err: any) {
@@ -139,8 +134,14 @@ export const Settings: React.FC<SettingsProps> = ({
     setShareFeedback(null);
     try {
       const res = await api.generateShareLink();
-      setCurrentShareUrl(res.shareUrl);
-      localStorage.setItem('stride_owner_share_link', res.shareUrl);
+      // When deployed, always use the active deployed frontend origin (never localhost)
+      const currentOrigin = window.location.origin.replace(/\/$/, '');
+      const fullUrl = !currentOrigin.includes('localhost')
+        ? `${currentOrigin}/share/${res.token}`
+        : res.shareUrl;
+
+      setCurrentShareUrl(fullUrl);
+      localStorage.setItem('stride_owner_share_link', fullUrl);
       setShareStatus({ hasActiveShare: true, createdAt: res.createdAt });
       setShareFeedback({
         type: 'success',
@@ -154,6 +155,18 @@ export const Settings: React.FC<SettingsProps> = ({
     } finally {
       setIsManagingShare(false);
     }
+  };
+
+  const getDisplayShareUrl = (): string => {
+    if (!currentShareUrl) return '';
+    const currentOrigin = window.location.origin.replace(/\/$/, '');
+    if (!currentOrigin.includes('localhost') && currentShareUrl.includes('localhost')) {
+      const parts = currentShareUrl.split('/share/');
+      if (parts.length > 1) {
+        return `${currentOrigin}/share/${parts[1]}`;
+      }
+    }
+    return currentShareUrl;
   };
 
   const handleRegenerateShareLink = async () => {
@@ -197,9 +210,10 @@ export const Settings: React.FC<SettingsProps> = ({
   };
 
   const handleCopyShareLink = async () => {
-    if (!currentShareUrl) return;
+    const urlToCopy = getDisplayShareUrl();
+    if (!urlToCopy) return;
     try {
-      await navigator.clipboard.writeText(currentShareUrl);
+      await navigator.clipboard.writeText(urlToCopy);
       setHasCopied(true);
       setTimeout(() => setHasCopied(false), 2500);
     } catch (err) {
@@ -209,6 +223,7 @@ export const Settings: React.FC<SettingsProps> = ({
       });
     }
   };
+
 
   const exportDataJson = () => {
 
@@ -333,6 +348,9 @@ export const Settings: React.FC<SettingsProps> = ({
                     {isSendingMagicLink ? 'Sending...' : 'Connect Supabase'}
                   </button>
                 </div>
+                <div style={{ marginTop: '0.5rem', fontSize: '0.78rem', color: '#666', lineHeight: 1.4 }}>
+                  Redirects to <code>{typeof window !== 'undefined' ? window.location.origin : 'http://localhost:5173'}</code>. Ensure <code>http://localhost:5173/**</code> and <code>https://exercise.launchstack.in/**</code> are in Supabase <em>Redirect URLs</em>.
+                </div>
               </form>
             </div>
           )}
@@ -397,10 +415,11 @@ export const Settings: React.FC<SettingsProps> = ({
                         <input
                           type="text"
                           readOnly
-                          value={currentShareUrl}
+                          value={getDisplayShareUrl()}
                           className="form-input share-url-input"
                           onClick={(e) => (e.target as HTMLInputElement).select()}
                         />
+
                       </div>
                       <button
                         type="button"

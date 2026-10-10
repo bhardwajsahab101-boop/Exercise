@@ -22,8 +22,10 @@ export class OwnerGuard implements CanActivate {
       throw new UnauthorizedException('Authentication required to verify owner privileges');
     }
 
-    const configuredOwnerId = this.configService.get<string>('OWNER_USER_ID');
-    const configuredOwnerEmail = this.configService.get<string>('OWNER_EMAIL');
+    const rawOwnerId = this.configService.get<string>('OWNER_USER_ID');
+    const configuredOwnerId = rawOwnerId && rawOwnerId.trim().length > 0 ? rawOwnerId.trim() : null;
+    const rawOwnerEmail = this.configService.get<string>('OWNER_EMAIL');
+    const configuredOwnerEmail = rawOwnerEmail && rawOwnerEmail.trim().length > 0 ? rawOwnerEmail.trim() : null;
 
     // If an owner user ID is specified, verify strict match
     if (configuredOwnerId && user.id !== configuredOwnerId) {
